@@ -37,6 +37,10 @@
 
 #if MICROPY_PY_THREAD
 
+#define MP_THREAD_MIN_STACK_SIZE                        (4 * 1024)
+#define MP_THREAD_DEFAULT_STACK_SIZE                    (MP_THREAD_MIN_STACK_SIZE + 1024)
+#define MP_THREAD_PRIORITY                              4
+
 // this structure forms a linked list, one node per active thread
 typedef struct _thread_t {
     TaskHandle_t id;        // system id of thread
@@ -102,24 +106,20 @@ void mp_thread_start(void) {
 }
 
 // TODO: wether need to store thread entry function into a global variable (in this way,we can access it)
-// STATIC void *(*ext_thread_entry)(void*) = NULL;
-// STATIC void freertos_entry(void *arg) {
-//     printf("entry freertos_entry\n");
-//     if (ext_thread_entry) {
-//         ext_thread_entry(arg);
-//     }
-//     vTaskDelete(NULL);
-//     for (;;);
-// }
-
-#define MP_THREAD_MIN_STACK_SIZE                        (4 * 1024)
-#define MP_THREAD_DEFAULT_STACK_SIZE                    (MP_THREAD_MIN_STACK_SIZE + 1024)
-#define MP_THREAD_PRIORITY                              4
+// when thread exit, it will be deleted by mp_thread_finish
+void *(*ext_thread_entry)(void*) = NULL;
+void func_entry(void *arg) {
+    if (ext_thread_entry) {
+        ext_thread_entry(arg);
+    }
+    vTaskDelete(NULL);
+    for (;;);
+}
 
 void mp_thread_create_ex(void *(*entry)(void*), void *arg, size_t *stack_size, int priority, char *name) {
-    // store thread entry function into a global variable so we can access it
-    //ext_thread_entry = entry;
-
+    //TODO: store thread entry function into a global variable so we can access it.
+    // !!!There is a bug here,func_entry can't work in thread If func_entry and ext_thread_entry are defined as a static variable
+    ext_thread_entry = entry;
     if (*stack_size == 0) {
         *stack_size = MP_THREAD_DEFAULT_STACK_SIZE; // default stack size
     } else if (*stack_size < MP_THREAD_MIN_STACK_SIZE) {
@@ -137,7 +137,7 @@ void mp_thread_create_ex(void *(*entry)(void*), void *arg, size_t *stack_size, i
     TaskStatus_t task_status;
 	//todo add schedule processor
     xTaskCreateAtProcessor(0, // processor
-						   entry, // function entry
+						   func_entry, // function entry
 						   name, //task name
 						   *stack_size / sizeof(StackType_t), //stack_deepth
 						   arg, //function arg
@@ -175,20 +175,6 @@ void mp_thread_create(void *(*entry)(void*), void *arg, size_t *stack_size) {
     thread_num++;
 }
 
-void mp_thread_finish(void) {
-    mp_thread_mutex_lock(&thread_mutex, 1);
-    thread_t *th = thread;
-    thread_t *pre_th = NULL;
-    for (th = thread; th != NULL; th = th->next) {
-        if (th->id == xTaskGetCurrentTaskHandle()) {
-            th->ready = 0;
-            //mp_thread_delete(pre_th,th);//TODO:wether need to delete threand to free memory
-            break;
-        }
-        pre_th = th;
-    }
-    mp_thread_mutex_unlock(&thread_mutex);
-}
 
 void mp_thread_mutex_init(mp_thread_mutex_t *mutex) {
     mutex->handle = xSemaphoreCreateMutexStatic(&mutex->buffer);
@@ -202,27 +188,71 @@ void mp_thread_mutex_unlock(mp_thread_mutex_t *mutex) {
     xSemaphoreGive(mutex->handle);
 }
 
-void mp_thread_delete(thread_t *pre_th,thread_t *th) {
-    pre_th->next = th->next;
-    vTaskDelete(th->id);
-    m_del_obj(thread_t,th);
+void mp_thread_finish(void) {
+    mp_thread_mutex_lock(&thread_mutex, 1);
+    thread_t *th = thread;
+    for (th = thread; th != 0; th = th->next) {
+        if (th->id == xTaskGetCurrentTaskHandle()) {
+            th->ready = 0;
+            break;
+        }
+    }
+    mp_thread_mutex_unlock(&thread_mutex);
 }
 
-void mp_thread_deinit(void) {
+//TODO:wether need to delete threand to free memory
+/* ------------------------------------------------ */
+// void mp_thread_delete(thread_t *pre_th,thread_t *th) {
+//     if(pre_th == 0)//if th is head of thread list
+//     {
+//         thread = th->next;
+//     }
+//     else
+//     {
+//         pre_th->next = th->next;
+//     }
+//     printf("[MAIXPY]: mp_thread_delete test 1 \n");
+//     m_del_obj(thread_t,th);
+//     printf("[MAIXPY]: mp_thread_delete test 2 \n");
+// }
+// void mp_thread_clear(void) {
+//     printf("[MAIXPY]: mp_thread_clear test 1\n");
+//     mp_thread_mutex_lock(&thread_mutex, 1);
+//     thread_t *th = NULL;
+//     thread_t *pre_th = NULL;
+//     for (th = thread; th != 0; th = th->next) {
+//         if (th->id == xTaskGetCurrentTaskHandle()) {
+//             if(th->ready == 0 && th->next != NULL)
+//             {
+//                 printf("[MAIXPY]: clear thread\n");
+//                 mp_thread_delete(pre_th,th);
+//                 printf("[MAIXPY]: finish mp_thread_delete\n");
+//                 break;
+//             }
+//         }
+//         pre_th = th;
+//     }
+//     printf("[MAIXPY]: mp_thread_clear test 2\n");
+//     mp_thread_mutex_unlock(&thread_mutex);
+// }
 
+/* ------------------------------------------------ */
+void mp_thread_deinit(void) {
     mp_thread_mutex_lock(&thread_mutex, 1);
-    for (thread_t *th = thread; th != NULL; th = th->next) {
+    for (thread_t *th = thread; th != 0; th = th->next) {
         // don't delete the current task
         if (th->id == xTaskGetCurrentTaskHandle()) {
+            // printf("[MAIXPY]: main thread %p\n",th->id);
             continue;
         }
-        vTaskDelete(th->id);
+        // printf("[MAIXPY]: deinit thread %p\n",th->id);
+        if(0 != th->ready)
+            vTaskDelete(th->id);
         m_del_obj(thread_t,th);
     }
     mp_thread_mutex_unlock(&thread_mutex);
     // allow FreeRTOS to clean-up the threads
     vTaskDelay(2);
-
 }
 
 #else
