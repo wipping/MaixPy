@@ -366,7 +366,7 @@ int main()
 	printk("[MAIXPY]Flash:0x%02x:0x%02x\r\n", manuf_id, device_id);
     /* Init SPI IO map and function settings */
     sysctl_set_spi0_dvp_data(1);
-#if MICROPY_PY_THREAD 
+#if MICROPY_PY_THREAD
 	xTaskCreateAtProcessor(0, // processor
 						 mp_task, // function entry
 						 "mp_task", //task name
@@ -374,6 +374,13 @@ int main()
 						 NULL, //function arg
 						 MP_TASK_PRIORITY, //task priority
 						 &mp_main_task_handle);//task handl
+    // xTaskCreateAtProcessor(0, // processor
+	// 					   mp_thread_monitor, // function entry
+	// 					   "monitor", //task name
+	// 					   MP_TASK_STACK_LEN , //stack_deepth
+	// 					   NULL, //function arg
+	// 					   MP_TASK_PRIORITY, //task priority,please don't change this parameter,because it will impack function running
+	// 					   &monitor_thread);//task handle
 	vTaskStartScheduler();
 	for(;;);
 #else

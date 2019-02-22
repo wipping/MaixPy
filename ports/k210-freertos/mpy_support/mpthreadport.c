@@ -38,7 +38,7 @@
 #if MICROPY_PY_THREAD
 
 #define MP_THREAD_MIN_STACK_SIZE                        (4 * 1024)
-#define MP_THREAD_DEFAULT_STACK_SIZE                    (MP_THREAD_MIN_STACK_SIZE + 1024)
+#define MP_THREAD_DEFAULT_STACK_SIZE                    (16 * 1024)
 #define MP_THREAD_PRIORITY                              4
 
 // this structure forms a linked list, one node per active thread
@@ -51,11 +51,14 @@ typedef struct _thread_t {
     struct _thread_t *next;
 } thread_t;
 
+TaskHandle_t monitor_thread; // thread monitor 
+STATIC uint32_t thread_num; //
 // the mutex controls access to the linked list
 STATIC mp_thread_mutex_t thread_mutex;
 STATIC thread_t thread_entry0;
 STATIC thread_t *thread; // root pointer, handled by mp_thread_gc_others
-STATIC uint32_t thread_num; // 
+
+ 
 void mp_thread_init(void *stack, uint32_t stack_len) {
     mp_thread_set_state(&mp_state_ctx.thread);
     // create the first entry in the linked list of all threads
@@ -67,7 +70,6 @@ void mp_thread_init(void *stack, uint32_t stack_len) {
     thread->stack_len = stack_len;
     thread->next = NULL;
     mp_thread_mutex_init(&thread_mutex);
-   // MP_THREAD_GIL_EXIT();
 }
 
 void mp_thread_gc_others(void) {
@@ -112,13 +114,17 @@ void func_entry(void *arg) {
     if (ext_thread_entry) {
         ext_thread_entry(arg);
     }
+    // xTaskNotifyGive(monitor_thread);
+    // mp_thread_traverse();
+    // mp_thread_clear();
+    // mp_thread_traverse();
     vTaskDelete(NULL);
-    for (;;);
+    for(;;);
 }
 
 void mp_thread_create_ex(void *(*entry)(void*), void *arg, size_t *stack_size, int priority, char *name) {
     //TODO: store thread entry function into a global variable so we can access it.
-    // !!!There is a bug here,func_entry can't work in thread If func_entry and ext_thread_entry are defined as a static variable
+    //There is a bug here,func_entry can't work in thread If func_entry and ext_thread_entry are defined as a static variable
     ext_thread_entry = entry;
     if (*stack_size == 0) {
         *stack_size = MP_THREAD_DEFAULT_STACK_SIZE; // default stack size
@@ -202,50 +208,58 @@ void mp_thread_finish(void) {
 
 //TODO:wether need to delete threand to free memory
 /* ------------------------------------------------ */
-// void mp_thread_delete(thread_t *pre_th,thread_t *th) {
-//     if(pre_th == 0)//if th is head of thread list
-//     {
-//         thread = th->next;
-//     }
-//     else
-//     {
-//         pre_th->next = th->next;
-//     }
-//     printf("[MAIXPY]: mp_thread_delete test 1 \n");
-//     m_del_obj(thread_t,th);
-//     printf("[MAIXPY]: mp_thread_delete test 2 \n");
-// }
-// void mp_thread_clear(void) {
-//     printf("[MAIXPY]: mp_thread_clear test 1\n");
-//     mp_thread_mutex_lock(&thread_mutex, 1);
-//     thread_t *th = NULL;
-//     thread_t *pre_th = NULL;
-//     for (th = thread; th != 0; th = th->next) {
-//         if (th->id == xTaskGetCurrentTaskHandle()) {
-//             if(th->ready == 0 && th->next != NULL)
-//             {
-//                 printf("[MAIXPY]: clear thread\n");
-//                 mp_thread_delete(pre_th,th);
-//                 printf("[MAIXPY]: finish mp_thread_delete\n");
-//                 break;
-//             }
-//         }
-//         pre_th = th;
-//     }
-//     printf("[MAIXPY]: mp_thread_clear test 2\n");
-//     mp_thread_mutex_unlock(&thread_mutex);
-// }
+void mp_thread_monitor()
+{   
+    printk("[MAIXPY]: run mp_thread_monitor\r\n");
+    for(;;)
+    {
+        ulTaskNotifyTake(pdTRUE,portMAX_DELAY);//wait to clean thread
+        mp_thread_traverse();
+        mp_thread_clear();
+        mp_thread_traverse();
+    }
+}
+void mp_thread_delete(thread_t *pre_th,thread_t *th) {
+    if(pre_th == 0)//if th is head of thread list
+        thread = th->next;
+    else
+        pre_th->next = th->next;
+    m_del_obj(thread_t,th);
+}
+void mp_thread_traverse(void)
+{
+    thread_t *th = NULL;
+    for (th = thread; th != 0; th = th->next)
+    {
+        printf("[MAIXPY]: thread node  = %p\n",th->id);
+    }
+}
+void mp_thread_clear(void){
+    mp_thread_mutex_lock(&thread_mutex, 1);
+    thread_t *th = NULL;
+    thread_t *pre_th = NULL;
+    for (th = thread; th != 0; th = th->next) {
+        if(th->ready == 0 && th->next != NULL)
+        {
+            mp_thread_delete(pre_th,th);
+            break;
+        }
+        pre_th = th;
+    }
+    mp_thread_mutex_unlock(&thread_mutex);
+}
 
 /* ------------------------------------------------ */
+//mp_thread_deinit can only be used in the main function
 void mp_thread_deinit(void) {
     mp_thread_mutex_lock(&thread_mutex, 1);
-    for (thread_t *th = thread; th != 0; th = th->next) {
+    thread_t *th = thread;
+    for (th = thread; th != 0; th = th->next) {
         // don't delete the current task
         if (th->id == xTaskGetCurrentTaskHandle()) {
-            // printf("[MAIXPY]: main thread %p\n",th->id);
+            thread = th;
             continue;
         }
-        // printf("[MAIXPY]: deinit thread %p\n",th->id);
         if(0 != th->ready)
             vTaskDelete(th->id);
         m_del_obj(thread_t,th);
